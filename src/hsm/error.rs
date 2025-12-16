@@ -12,6 +12,9 @@ pub enum HsmError {
     /// Signing operation failed
     SigningFailed(String),
 
+    /// Listing objects/keys failed
+    ListingFailed(String),
+
     /// Verification operation failed
     VerificationFailed(String),
 
@@ -20,6 +23,9 @@ pub enum HsmError {
 
     /// Invalid input data
     InvalidInput(String),
+
+    /// Failed to get public key
+    GetPublicKeyFailed(String),
 }
 
 impl fmt::Display for HsmError {
@@ -30,6 +36,8 @@ impl fmt::Display for HsmError {
             HsmError::VerificationFailed(msg) => write!(f, "Verification failed: {}", msg),
             HsmError::InvalidKey(msg) => write!(f, "Invalid key: {}", msg),
             HsmError::InvalidInput(msg) => write!(f, "Invalid input: {}", msg),
+            HsmError::ListingFailed(msg) => write!(f, "Listing failed: {}", msg),
+            HsmError::GetPublicKeyFailed(msg) => write!(f, "Failed to get public key: {}", msg),
         }
     }
 }

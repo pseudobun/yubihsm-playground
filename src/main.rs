@@ -25,6 +25,7 @@ pub struct HsmApp {
     output_text: SharedString,
     signature: Option<Vec<u8>>,
     current_screen: Screen,
+    keys_output: SharedString,
 }
 
 impl HsmApp {
@@ -36,6 +37,9 @@ impl HsmApp {
             output_text: SharedString::from("Ready. Type text and click Sign."),
             signature: None,
             current_screen: Screen::SignVerify,
+            keys_output: SharedString::from(
+                "Click \"List keys\" to query objects from the YubiHSM2.",
+            ),
         }
     }
 

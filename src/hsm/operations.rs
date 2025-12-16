@@ -1,6 +1,10 @@
 use super::client::HsmClient;
 use super::error::{HsmError, HsmResult};
+use hex;
 use sha2::{Digest, Sha256};
+use std::fmt::Write as _;
+use yubihsm::asymmetric::PublicKey;
+use yubihsm::object::{Id, Info, Type};
 
 /// sign data using an ECDSA key (secp256r1/P-256) stored in the HSM
 /// First hashes the data with SHA-256, then signs the hash
@@ -97,4 +101,88 @@ pub fn verify(client: &HsmClient, key_id: u16, data: &[u8], signature: &[u8]) ->
         Ok(_) => Ok(true),
         Err(_) => Ok(false),
     }
+}
+
+/// List all objects visible to the current authentication key on the HSM.
+/// Returns a human-readable summary string that can be shown in the UI.
+pub fn list_objects(client: &HsmClient) -> HsmResult<String> {
+    let hsm_client = client.client();
+    let hsm = hsm_client
+        .lock()
+        .map_err(|e| HsmError::ListingFailed(format!("Failed to lock client: {}", e)))?;
+
+    // Empty filter list = list all objects visible to this auth key
+    let entries = hsm
+        .list_objects(&[])
+        .map_err(|e| HsmError::ListingFailed(format!("{:?}", e)))?;
+    drop(hsm);
+
+    if entries.is_empty() {
+        return Ok("No objects visible for the current authentication key.".to_string());
+    }
+
+    let mut out = String::from("Objects on YubiHSM2 (visible to current auth key):\n");
+    for entry in entries {
+        // Fetch full object info for this entry
+        let info = get_object_info(client, entry.object_id, entry.object_type)?;
+
+        let _ = writeln!(
+            &mut out,
+            "- id 0x{:04x} ({:?}), algorithm: {:?}, label: {:?}, sequence: {}",
+            info.object_id, info.object_type, info.algorithm, info.label, info.sequence,
+        );
+
+        // If this is an asymmetric key, also display its public key
+        if info.object_type == Type::AsymmetricKey {
+            let public_key = get_public_key(client, info.object_id)?;
+            let pk_hex = hex::encode(&public_key.bytes);
+
+            // Format hex with line breaks for readability (64 chars per line)
+            let formatted_hex: String = pk_hex
+                .chars()
+                .collect::<Vec<_>>()
+                .chunks(64)
+                .map(|chunk| chunk.iter().collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n    ");
+
+            let _ = writeln!(
+                &mut out,
+                "  Public Key:\n    Algorithm: {:?}\n    Bytes ({} bytes, hex):\n    {}",
+                public_key.algorithm,
+                public_key.bytes.len(),
+                formatted_hex
+            );
+        }
+    }
+
+    Ok(out)
+}
+
+/// Get detailed information about an object (using its ID and type).
+pub fn get_object_info(client: &HsmClient, object_id: Id, object_type: Type) -> HsmResult<Info> {
+    let hsm_client = client.client();
+    let hsm = hsm_client
+        .lock()
+        .map_err(|e| HsmError::ListingFailed(format!("Failed to lock client: {}", e)))?;
+
+    let info = hsm
+        .get_object_info(object_id, object_type)
+        .map_err(|e| HsmError::ListingFailed(format!("Failed to get object info: {:?}", e)))?;
+
+    Ok(info)
+}
+
+/// Get the public key bytes/algorithm for an asymmetric key object id.
+pub fn get_public_key(client: &HsmClient, key_id: Id) -> HsmResult<PublicKey> {
+    let hsm_client = client.client();
+    let hsm = hsm_client
+        .lock()
+        .map_err(|e| HsmError::ListingFailed(format!("Failed to lock client: {}", e)))?;
+
+    let public_key = hsm
+        .get_public_key(key_id)
+        .map_err(|e| HsmError::GetPublicKeyFailed(format!("Failed to get public key: {:?}", e)))?;
+
+    Ok(public_key)
 }
