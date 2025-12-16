@@ -9,7 +9,9 @@ use gpui::{
     MouseButton, ParentElement, Render, SharedString, Styled, Window, WindowBounds, WindowOptions,
     actions, div, prelude::*, px, rgb, size,
 };
+use gpui_component::table::TableState;
 use hsm::{HsmClient, HsmConfig, SessionManager};
+use screens::keys_config::KeysTableDelegate;
 use ui::TextArea;
 
 actions!(hsm_demo, [SignText, VerifyText]);
@@ -30,6 +32,11 @@ pub struct HsmApp {
     signature: Option<Vec<u8>>,
     current_screen: Screen,
     keys_output: SharedString,
+    keys_table: Option<Entity<TableState<KeysTableDelegate>>>,
+    /// Cached keys data for deletion operations
+    keys_data: Vec<hsm::ObjectSummary>,
+    /// Currently selected key row index for deletion
+    selected_key_row: Option<usize>,
 }
 
 impl HsmApp {
@@ -49,6 +56,9 @@ impl HsmApp {
             keys_output: SharedString::from(
                 "Click \"List keys\" to query objects from the YubiHSM2.",
             ),
+            keys_table: None,
+            keys_data: Vec::new(),
+            selected_key_row: None,
         }
     }
 
@@ -155,6 +165,9 @@ impl HsmApp {
         self.keys_output =
             SharedString::from("Click \"List keys\" to query objects from the YubiHSM2.");
         self.signature = None;
+        self.keys_table = None;
+        self.keys_data = Vec::new();
+        self.selected_key_row = None;
 
         // Clear password field
         self.auth_password_input
@@ -251,27 +264,24 @@ impl Render for HsmApp {
                     .child(div().flex_grow())
                     // Centered disconnect button at the bottom
                     .child(
-                        div()
-                            .flex()
-                            .justify_center()
-                            .child(
-                                div()
-                                    .bg(rgb(0x6c757d))
-                                    .hover(|style| style.bg(rgb(0x5a6268)))
-                                    .rounded_md()
-                                    .px_4()
-                                    .py_2()
-                                    .cursor_pointer()
-                                    .text_color(rgb(0xffffff))
-                                    .text_center()
-                                    .child("Disconnect")
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|view, _, _, cx| {
-                                            view.disconnect_session(cx);
-                                        }),
-                                    ),
-                            ),
+                        div().flex().justify_center().child(
+                            div()
+                                .bg(rgb(0x6c757d))
+                                .hover(|style| style.bg(rgb(0x5a6268)))
+                                .rounded_md()
+                                .px_4()
+                                .py_2()
+                                .cursor_pointer()
+                                .text_color(rgb(0xffffff))
+                                .text_center()
+                                .child("Disconnect")
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|view, _, _, cx| {
+                                        view.disconnect_session(cx);
+                                    }),
+                                ),
+                        ),
                     ),
             )
             .child(
@@ -289,6 +299,9 @@ impl EventEmitter<()> for HsmApp {}
 
 fn main() {
     Application::new().run(|cx: &mut App| {
+        // Initialize gpui-component (theme, global state, etc.)
+        gpui_component::init(cx);
+
         let bounds = Bounds::centered(None, size(px(800.), px(600.)), cx);
 
         // Bind keys for textarea actions

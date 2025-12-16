@@ -3,8 +3,9 @@ use super::error::{HsmError, HsmResult};
 use hex;
 use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
+use yubihsm::Algorithm;
 use yubihsm::asymmetric::PublicKey;
-use yubihsm::object::{Id, Info, Type};
+use yubihsm::object::{Id, Info, Label, SequenceId, Type};
 
 /// sign data using an ECDSA key (secp256r1/P-256) stored in the HSM
 /// First hashes the data with SHA-256, then signs the hash
@@ -106,37 +107,26 @@ pub fn verify(client: &HsmClient, key_id: u16, data: &[u8], signature: &[u8]) ->
 /// List all objects visible to the current authentication key on the HSM.
 /// Returns a human-readable summary string that can be shown in the UI.
 pub fn list_objects(client: &HsmClient) -> HsmResult<String> {
-    let hsm_client = client.client();
-    let hsm = hsm_client
-        .lock()
-        .map_err(|e| HsmError::ListingFailed(format!("Failed to lock client: {}", e)))?;
+    let summaries = list_object_summaries(client)?;
 
-    // Empty filter list = list all objects visible to this auth key
-    let entries = hsm
-        .list_objects(&[])
-        .map_err(|e| HsmError::ListingFailed(format!("{:?}", e)))?;
-    drop(hsm);
-
-    if entries.is_empty() {
+    if summaries.is_empty() {
         return Ok("No objects visible for the current authentication key.".to_string());
     }
 
     let mut out = String::from("Objects on YubiHSM2 (visible to current auth key):\n");
-    for entry in entries {
-        // Fetch full object info for this entry
-        let info = get_object_info(client, entry.object_id, entry.object_type)?;
-
+    for summary in summaries {
         let _ = writeln!(
             &mut out,
             "- id 0x{:04x} ({:?}), algorithm: {:?}, label: {:?}, sequence: {}",
-            info.object_id, info.object_type, info.algorithm, info.label, info.sequence,
+            summary.object_id,
+            summary.object_type,
+            summary.algorithm,
+            summary.label,
+            summary.sequence,
         );
 
         // If this is an asymmetric key, also display its public key
-        if info.object_type == Type::AsymmetricKey {
-            let public_key = get_public_key(client, info.object_id)?;
-            let pk_hex = hex::encode(&public_key.bytes);
-
+        if let Some(pk_hex) = summary.public_key_hex.as_ref() {
             // Format hex with line breaks for readability (64 chars per line)
             let formatted_hex: String = pk_hex
                 .chars()
@@ -149,8 +139,8 @@ pub fn list_objects(client: &HsmClient) -> HsmResult<String> {
             let _ = writeln!(
                 &mut out,
                 "  Public Key:\n    Algorithm: {:?}\n    Bytes ({} bytes, hex):\n    {}",
-                public_key.algorithm,
-                public_key.bytes.len(),
+                summary.algorithm,
+                pk_hex.len() / 2,
                 formatted_hex
             );
         }
@@ -185,4 +175,74 @@ pub fn get_public_key(client: &HsmClient, key_id: Id) -> HsmResult<PublicKey> {
         .map_err(|e| HsmError::GetPublicKeyFailed(format!("Failed to get public key: {:?}", e)))?;
 
     Ok(public_key)
+}
+
+/// Structured summary of an HSM object suitable for displaying in a table.
+#[derive(Clone, Debug)]
+pub struct ObjectSummary {
+    pub object_id: Id,
+    pub object_type: Type,
+    pub algorithm: Algorithm,
+    pub label: Label,
+    pub sequence: SequenceId,
+    /// Hex-encoded public key bytes for asymmetric keys, if available.
+    pub public_key_hex: Option<String>,
+}
+
+/// Delete an object from the HSM by ID and type.
+/// Note: This will NOT delete authentication keys for safety.
+pub fn delete_object(client: &HsmClient, object_id: Id, object_type: Type) -> HsmResult<()> {
+    if object_type == Type::AuthenticationKey {
+        return Err(HsmError::InvalidInput(
+            "Deleting authentication keys is not allowed".to_string(),
+        ));
+    }
+
+    let hsm_client = client.client();
+    let hsm = hsm_client
+        .lock()
+        .map_err(|e| HsmError::DeletionFailed(format!("Failed to lock client: {}", e)))?;
+
+    hsm.delete_object(object_id, object_type)
+        .map_err(|e| HsmError::DeletionFailed(format!("Failed to delete object: {:?}", e)))?;
+
+    Ok(())
+}
+
+/// List objects and return structured summaries that can be rendered in a table.
+pub fn list_object_summaries(client: &HsmClient) -> HsmResult<Vec<ObjectSummary>> {
+    let hsm_client = client.client();
+    let hsm = hsm_client
+        .lock()
+        .map_err(|e| HsmError::ListingFailed(format!("Failed to lock client: {}", e)))?;
+
+    // Empty filter list = list all objects visible to this auth key
+    let entries = hsm
+        .list_objects(&[])
+        .map_err(|e| HsmError::ListingFailed(format!("{:?}", e)))?;
+    drop(hsm);
+
+    let mut summaries = Vec::new();
+
+    for entry in entries {
+        let info = get_object_info(client, entry.object_id, entry.object_type)?;
+
+        let public_key_hex = if info.object_type == Type::AsymmetricKey {
+            let public_key = get_public_key(client, info.object_id)?;
+            Some(hex::encode(&public_key.bytes))
+        } else {
+            None
+        };
+
+        summaries.push(ObjectSummary {
+            object_id: info.object_id,
+            object_type: info.object_type,
+            algorithm: info.algorithm,
+            label: info.label,
+            sequence: info.sequence,
+            public_key_hex,
+        });
+    }
+
+    Ok(summaries)
 }

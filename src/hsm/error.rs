@@ -26,6 +26,9 @@ pub enum HsmError {
 
     /// Failed to get public key
     GetPublicKeyFailed(String),
+
+    /// Failed to delete object
+    DeletionFailed(String),
 }
 
 impl fmt::Display for HsmError {
@@ -38,6 +41,7 @@ impl fmt::Display for HsmError {
             HsmError::InvalidInput(msg) => write!(f, "Invalid input: {}", msg),
             HsmError::ListingFailed(msg) => write!(f, "Listing failed: {}", msg),
             HsmError::GetPublicKeyFailed(msg) => write!(f, "Failed to get public key: {}", msg),
+            HsmError::DeletionFailed(msg) => write!(f, "Deletion failed: {}", msg),
         }
     }
 }
