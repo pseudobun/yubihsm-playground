@@ -9,18 +9,22 @@ use gpui::{
     MouseButton, ParentElement, Render, SharedString, Styled, Window, WindowBounds, WindowOptions,
     actions, div, prelude::*, px, rgb, size,
 };
-use hsm::{HsmClient, HsmConfig};
+use hsm::{HsmClient, HsmConfig, SessionManager};
 use ui::TextArea;
 
 actions!(hsm_demo, [SignText, VerifyText]);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
+    Auth,
     SignVerify,
     KeysConfig,
 }
 
 pub struct HsmApp {
+    auth_password_input: Entity<TextArea>,
+    auth_status: SharedString,
+    session: SessionManager,
     text_input: Entity<TextArea>,
     output_text: SharedString,
     signature: Option<Vec<u8>>,
@@ -30,13 +34,18 @@ pub struct HsmApp {
 
 impl HsmApp {
     fn new(cx: &mut Context<'_, Self>) -> Self {
+        let auth_password_input =
+            cx.new(|cx| TextArea::new(cx, "Enter YubiHSM auth password...".to_string()));
         let text_input = cx.new(|cx| TextArea::new(cx, "Type your text here...".to_string()));
 
         Self {
+            auth_password_input,
+            auth_status: SharedString::from("Please authenticate to the YubiHSM session."),
+            session: SessionManager::new(),
             text_input,
             output_text: SharedString::from("Ready. Type text and click Sign."),
             signature: None,
-            current_screen: Screen::SignVerify,
+            current_screen: Screen::Auth,
             keys_output: SharedString::from(
                 "Click \"List keys\" to query objects from the YubiHSM2.",
             ),
@@ -51,15 +60,9 @@ impl HsmApp {
             return;
         }
 
-        // Create HSM config
-        let config = HsmConfig {
-            auth_key_id: DEFAULT_AUTH_KEY_ID,
-            auth_password: DEFAULT_AUTH_PASSWORD.to_string(),
-        };
-
-        // Connect to YubiHSM2 via USB and sign
-        match HsmClient::connect(config) {
-            Ok(client) => match hsm::sign(&client, DEFAULT_SIGNING_KEY_ID, text.as_bytes()) {
+        // Use the active HSM session to sign
+        match self.session.active_client() {
+            Ok(client) => match hsm::sign(client, DEFAULT_SIGNING_KEY_ID, text.as_bytes()) {
                 Ok(signature) => {
                     let sig_hex = hex::encode(&signature);
                     self.signature = Some(signature);
@@ -75,7 +78,11 @@ impl HsmApp {
                 }
             },
             Err(e) => {
-                self.output_text = format!("Failed to connect to YubiHSM2 via USB: {}\n\nMake sure your YubiHSM2 is connected via USB.", e).into();
+                self.output_text = format!(
+                    "Failed to use YubiHSM2 session: {}\n\nGo to the Auth screen and authenticate first.",
+                    e
+                )
+                .into();
             }
         }
 
@@ -97,17 +104,11 @@ impl HsmApp {
             return;
         }
 
-        // Create HSM config
-        let config = HsmConfig {
-            auth_key_id: DEFAULT_AUTH_KEY_ID,
-            auth_password: DEFAULT_AUTH_PASSWORD.to_string(),
-        };
-
-        // Connect to YubiHSM2 via USB and verify
-        match HsmClient::connect(config) {
+        // Use the active HSM session to verify
+        match self.session.active_client() {
             Ok(client) => {
                 match hsm::verify(
-                    &client,
+                    client,
                     DEFAULT_SIGNING_KEY_ID,
                     text.as_bytes(),
                     self.signature.as_ref().unwrap(),
@@ -131,9 +132,33 @@ impl HsmApp {
                 }
             }
             Err(e) => {
-                self.output_text = format!("Failed to connect to YubiHSM2 via USB: {}", e).into();
+                self.output_text = format!(
+                    "Failed to use YubiHSM2 session: {}\n\nGo to the Auth screen and authenticate first.",
+                    e
+                )
+                .into();
             }
         }
+
+        cx.notify();
+    }
+
+    fn disconnect_session(&mut self, cx: &mut Context<'_, Self>) {
+        // Drop the active HSM session
+        self.session.disconnect();
+
+        // Reset app state
+        self.current_screen = Screen::Auth;
+        self.auth_status =
+            SharedString::from("Disconnected. Please authenticate to the YubiHSM session.");
+        self.output_text = SharedString::from("Ready. Type text and click Sign.");
+        self.keys_output =
+            SharedString::from("Click \"List keys\" to query objects from the YubiHSM2.");
+        self.signature = None;
+
+        // Clear password field
+        self.auth_password_input
+            .update(cx, |input, cx| input.set_content(String::new(), cx));
 
         cx.notify();
     }
@@ -141,6 +166,17 @@ impl HsmApp {
 
 impl Render for HsmApp {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<'_, Self>) -> impl IntoElement {
+        // If not authenticated, show only the auth screen (no sidebar)
+        if !self.session.is_authenticated() {
+            return div()
+                .flex()
+                .flex_col()
+                .bg(rgb(0x2e2e2e))
+                .size_full()
+                .child(self.render_auth_screen(cx));
+        }
+
+        // If authenticated, show full UI with sidebar
         div()
             .flex()
             .flex_row()
@@ -210,11 +246,38 @@ impl Render for HsmApp {
                                     cx.notify();
                                 }),
                             )
-                    }),
+                    })
+                    // Spacer to push the disconnect button to the bottom
+                    .child(div().flex_grow())
+                    // Centered disconnect button at the bottom
+                    .child(
+                        div()
+                            .flex()
+                            .justify_center()
+                            .child(
+                                div()
+                                    .bg(rgb(0x6c757d))
+                                    .hover(|style| style.bg(rgb(0x5a6268)))
+                                    .rounded_md()
+                                    .px_4()
+                                    .py_2()
+                                    .cursor_pointer()
+                                    .text_color(rgb(0xffffff))
+                                    .text_center()
+                                    .child("Disconnect")
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(|view, _, _, cx| {
+                                            view.disconnect_session(cx);
+                                        }),
+                                    ),
+                            ),
+                    ),
             )
             .child(
                 // Main content area
                 match self.current_screen {
+                    Screen::Auth => self.render_auth_screen(cx),
                     Screen::SignVerify => self.render_sign_verify_screen(cx),
                     Screen::KeysConfig => self.render_keys_config_screen(cx),
                 },
@@ -250,10 +313,10 @@ fn main() {
             )
             .unwrap();
 
-        // Focus the text input on startup
+        // Focus the auth password input on startup
         window
             .update(cx, |view, window, cx| {
-                window.focus(&view.text_input.focus_handle(cx));
+                window.focus(&view.auth_password_input.focus_handle(cx));
             })
             .unwrap();
     });

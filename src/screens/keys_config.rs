@@ -2,21 +2,12 @@ use gpui::{
     AnyElement, Context, Element, InteractiveElement, MouseButton, ParentElement, Styled, div, rgb,
 };
 
-use crate::{
-    HsmApp,
-    config::{DEFAULT_AUTH_KEY_ID, DEFAULT_AUTH_PASSWORD},
-    hsm::{self, HsmClient, HsmConfig},
-};
+use crate::{HsmApp, hsm};
 
 impl HsmApp {
     fn load_keys_from_hsm(&mut self, cx: &mut Context<'_, Self>) {
-        let config = HsmConfig {
-            auth_key_id: DEFAULT_AUTH_KEY_ID,
-            auth_password: DEFAULT_AUTH_PASSWORD.to_string(),
-        };
-
-        match HsmClient::connect(config) {
-            Ok(client) => match hsm::list_objects(&client) {
+        match self.session.active_client() {
+            Ok(client) => match hsm::list_objects(client) {
                 Ok(summary) => {
                     self.keys_output = summary.into();
                 }
@@ -26,7 +17,11 @@ impl HsmApp {
                 }
             },
             Err(e) => {
-                self.keys_output = format!("Failed to connect to YubiHSM2 via USB: {}", e).into();
+                self.keys_output = format!(
+                    "Failed to use YubiHSM2 session: {}\n\nGo to the Auth screen and authenticate first.",
+                    e
+                )
+                .into();
             }
         }
 
